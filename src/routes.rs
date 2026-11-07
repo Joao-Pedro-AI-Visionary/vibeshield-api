@@ -4,6 +4,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{DefaultBodyLimit, State};
 use axum::http::{Method, header};
@@ -18,6 +20,7 @@ use tower_http::trace::TraceLayer;
 use utoipa::{OpenApi, ToSchema};
 use utoipa_swagger_ui::SwaggerUi;
 
+use crate::client_ip::ClientIpKey;
 use crate::config::Config;
 use crate::error::{ApiError, ErrorBody};
 use crate::fetch::{self, ExtractLimits};
@@ -32,6 +35,8 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub struct AppState {
     pub config: Arc<Config>,
     pub http: reqwest::Client,
+    /// Slots de scan simultâneo (MAX_CONCURRENT_SCANS); cheio → 503 SERVER_BUSY.
+    pub scan_slots: Arc<Semaphore>,
 }
 
 impl AppState {
@@ -42,9 +47,11 @@ impl AppState {
             .redirect(reqwest::redirect::Policy::limited(3))
             .build()
             .map_err(|e| format!("falha ao criar cliente HTTP: {e}"))?;
+        let scan_slots = Arc::new(Semaphore::new(config.max_concurrent_scans));
         Ok(Self {
             config: Arc::new(config),
             http,
+            scan_slots,
         })
     }
 }
@@ -109,11 +116,23 @@ pub async fn create_scan(
 ) -> Result<Json<ScanReport>, ApiError> {
     let Json(req) = body.map_err(|e| ApiError::InvalidBody(e.body_text()))?;
     let repo = repo_url::parse_repo_url(&req.repo_url)?;
+    // Sem fila: se não há slot livre, responde 503 na hora.
+    let permit = Arc::new(
+        Arc::clone(&state.scan_slots)
+            .try_acquire_owned()
+            .map_err(|_| ApiError::ServerBusy)?,
+    );
     let cancel = Arc::new(AtomicBool::new(false));
     let timeout = state.config.scan_timeout;
     let result = tokio::time::timeout(
         timeout,
-        run_scan(&state, repo, req.check_dependencies, Arc::clone(&cancel)),
+        run_scan(
+            &state,
+            repo,
+            req.check_dependencies,
+            Arc::clone(&cancel),
+            permit,
+        ),
     )
     .await;
     match result {
@@ -130,6 +149,7 @@ async fn run_scan(
     repo: RepoRef,
     check_dependencies: bool,
     cancel: Arc<AtomicBool>,
+    permit: Arc<OwnedSemaphorePermit>,
 ) -> Result<ScanReport, ApiError> {
     let started = Instant::now();
     let cfg = Arc::clone(&state.config);
@@ -148,7 +168,10 @@ async fn run_scan(
         max_unpacked_bytes: cfg.max_download_bytes.saturating_mul(4),
     };
     let max_file_bytes = cfg.max_file_bytes;
+    // A tarefa bloqueante segura o slot até terminar (mesmo após timeout do handler).
+    let blocking_permit = Arc::clone(&permit);
     let scan = tokio::task::spawn_blocking(move || -> Result<_, ApiError> {
+        let _slot = blocking_permit;
         let dir = tempfile::Builder::new()
             .prefix("vibeshield-")
             .tempdir()
@@ -163,7 +186,7 @@ async fn run_scan(
     .map_err(|e| ApiError::Internal(format!("tarefa de varredura falhou: {e}")))?;
     let (stats, out) = scan?;
 
-    let mut findings = out.findings;
+    let mut collected = out.collected;
     if check_dependencies {
         let dep_refs = deps::collect_deps(&out.manifests);
         if !dep_refs.is_empty() {
@@ -171,7 +194,7 @@ async fn run_scan(
                 .duration_since(UNIX_EPOCH)
                 .map(|d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
                 .unwrap_or(0);
-            let mut dep_findings = deps::check_deps(
+            let dep_findings = deps::check_deps(
                 &state.http,
                 &cfg.npm_registry_base,
                 &cfg.pypi_base,
@@ -179,14 +202,13 @@ async fn run_scan(
                 now,
             )
             .await;
-            scanner::apply_test_context(&mut dep_findings);
-            findings.extend(dep_findings);
+            collected = collected.merge(dep_findings);
         }
     }
 
     Ok(report::build_report(ReportInput {
         repo,
-        findings,
+        collected,
         files_scanned: out.files_scanned,
         files_skipped: out.files_skipped + stats.files_skipped,
         bytes_downloaded,
@@ -208,6 +230,9 @@ pub fn build_app(state: AppState) -> Result<Router, String> {
     let per_minute = state.config.rate_limit_per_minute.max(1);
     let period_ms = (60_000 / u64::from(per_minute)).max(1);
     let governor = GovernorConfigBuilder::default()
+        .key_extractor(ClientIpKey {
+            trust_xff: state.config.trust_x_forwarded_for,
+        })
         .per_millisecond(period_ms)
         .burst_size(per_minute)
         .finish()

@@ -26,6 +26,8 @@ pub struct Config {
     pub github_codeload_base: String,
     pub npm_registry_base: String,
     pub pypi_base: String,
+    pub max_concurrent_scans: usize,
+    pub trust_x_forwarded_for: bool,
 }
 
 impl Config {
@@ -48,6 +50,9 @@ impl Config {
         positive("MAX_FILES", max_files as u64)?;
         positive("SCAN_TIMEOUT_SECS", scan_timeout_secs)?;
         positive("RATE_LIMIT_PER_MINUTE", u64::from(rate_limit_per_minute))?;
+        let max_concurrent_scans = parse_num::<usize>(&get, "MAX_CONCURRENT_SCANS", 2)?;
+        positive("MAX_CONCURRENT_SCANS", max_concurrent_scans as u64)?;
+        let trust_x_forwarded_for = parse_bool(&get, "TRUST_X_FORWARDED_FOR", false)?;
         if rate_limit_per_minute > 60_000 {
             return Err(ConfigError::Invalid {
                 name: "RATE_LIMIT_PER_MINUTE",
@@ -101,6 +106,8 @@ impl Config {
             )?,
             npm_registry_base: base_url(&get, "NPM_REGISTRY_BASE", "https://registry.npmjs.org")?,
             pypi_base: base_url(&get, "PYPI_BASE", "https://pypi.org")?,
+            max_concurrent_scans,
+            trust_x_forwarded_for,
         })
     }
 }
@@ -116,6 +123,23 @@ fn parse_num<T: std::str::FromStr>(
             name,
             value: v,
             reason: "esperado um número inteiro não negativo",
+        }),
+    }
+}
+
+fn parse_bool(
+    get: &impl Fn(&str) -> Option<String>,
+    name: &'static str,
+    default: bool,
+) -> Result<bool, ConfigError> {
+    match get(name).map(|v| v.trim().to_ascii_lowercase()) {
+        None => Ok(default),
+        Some(v) if v == "true" || v == "1" || v == "yes" => Ok(true),
+        Some(v) if v == "false" || v == "0" || v == "no" || v.is_empty() => Ok(false),
+        Some(v) => Err(ConfigError::Invalid {
+            name,
+            value: v,
+            reason: "esperado true ou false",
         }),
     }
 }
@@ -170,6 +194,8 @@ mod tests {
         assert_eq!(c.max_files, 20_000);
         assert_eq!(c.scan_timeout, Duration::from_secs(60));
         assert_eq!(c.rate_limit_per_minute, 10);
+        assert_eq!(c.max_concurrent_scans, 2);
+        assert!(!c.trust_x_forwarded_for);
         assert_eq!(c.github_codeload_base, "https://codeload.github.com");
         assert_eq!(c.frontend_origins.len(), 1);
     }
@@ -180,6 +206,13 @@ mod tests {
         assert_eq!(c.frontend_origins.len(), 2);
         assert!(cfg(&[("PORT", "abc")]).is_err());
         assert!(cfg(&[("RATE_LIMIT_PER_MINUTE", "0")]).is_err());
+        assert!(cfg(&[("MAX_CONCURRENT_SCANS", "0")]).is_err());
+        assert!(cfg(&[("TRUST_X_FORWARDED_FOR", "talvez")]).is_err());
+        assert!(
+            cfg(&[("TRUST_X_FORWARDED_FOR", "true")])
+                .expect("ok")
+                .trust_x_forwarded_for
+        );
         assert!(cfg(&[("FRONTEND_URL", "*")]).is_err());
         assert!(cfg(&[("NPM_REGISTRY_BASE", "ftp://x")]).is_err());
     }

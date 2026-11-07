@@ -22,6 +22,8 @@ pub enum ApiError {
     Upstream(String),
     #[error("tempo de análise esgotado")]
     ScanTimeout,
+    #[error("servidor ocupado")]
+    ServerBusy,
     #[error("rota não encontrada")]
     NotFound,
     #[error("método não permitido")]
@@ -38,7 +40,7 @@ pub struct ErrorBody {
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ErrorDetail {
     /// Um de INVALID_REPO_URL, INVALID_BODY, REPO_NOT_FOUND, REPO_TOO_LARGE,
-    /// RATE_LIMITED, UPSTREAM_ERROR, SCAN_TIMEOUT, NOT_FOUND, METHOD_NOT_ALLOWED, INTERNAL.
+    /// RATE_LIMITED, UPSTREAM_ERROR, SCAN_TIMEOUT, SERVER_BUSY, NOT_FOUND, METHOD_NOT_ALLOWED, INTERNAL.
     pub code: &'static str,
     pub message: String,
 }
@@ -52,6 +54,7 @@ impl ApiError {
             ApiError::RateLimited => StatusCode::TOO_MANY_REQUESTS,
             ApiError::Upstream(_) => StatusCode::BAD_GATEWAY,
             ApiError::ScanTimeout => StatusCode::GATEWAY_TIMEOUT,
+            ApiError::ServerBusy => StatusCode::SERVICE_UNAVAILABLE,
             ApiError::NotFound => StatusCode::NOT_FOUND,
             ApiError::MethodNotAllowed => StatusCode::METHOD_NOT_ALLOWED,
             ApiError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
@@ -67,6 +70,7 @@ impl ApiError {
             ApiError::RateLimited => "RATE_LIMITED",
             ApiError::Upstream(_) => "UPSTREAM_ERROR",
             ApiError::ScanTimeout => "SCAN_TIMEOUT",
+            ApiError::ServerBusy => "SERVER_BUSY",
             ApiError::NotFound => "NOT_FOUND",
             ApiError::MethodNotAllowed => "METHOD_NOT_ALLOWED",
             ApiError::Internal(_) => "INTERNAL",
@@ -96,6 +100,9 @@ impl ApiError {
             }
             ApiError::ScanTimeout => {
                 "A análise passou do tempo máximo permitido.".to_string()
+            }
+            ApiError::ServerBusy => {
+                "Todas as análises simultâneas estão ocupadas. Tente de novo em instantes.".to_string()
             }
             ApiError::NotFound => "Rota não encontrada.".to_string(),
             ApiError::MethodNotAllowed => {
@@ -138,6 +145,7 @@ mod tests {
             (ApiError::RateLimited, 429, "RATE_LIMITED"),
             (ApiError::Upstream("x".into()), 502, "UPSTREAM_ERROR"),
             (ApiError::ScanTimeout, 504, "SCAN_TIMEOUT"),
+            (ApiError::ServerBusy, 503, "SERVER_BUSY"),
             (ApiError::NotFound, 404, "NOT_FOUND"),
             (ApiError::MethodNotAllowed, 405, "METHOD_NOT_ALLOWED"),
             (ApiError::Internal("segredo".into()), 500, "INTERNAL"),

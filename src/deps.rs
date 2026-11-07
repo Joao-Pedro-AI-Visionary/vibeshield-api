@@ -7,7 +7,8 @@ use std::time::Duration;
 use futures::StreamExt;
 use regex::Regex;
 
-use crate::scanner::{Category, Manifest, RawFinding, Severity};
+use crate::redact;
+use crate::scanner::{Collected, DepInfo, FileSink, Manifest, rules};
 
 pub const MAX_CONCURRENCY: usize = 8;
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
@@ -76,16 +77,56 @@ fn npm_spec_ignored(spec: &str) -> bool {
     s.contains('/') && !s.starts_with('@')
 }
 
-fn line_of_key(content: &str, name: &str) -> u32 {
-    let needle = format!("\"{name}\"");
-    content
-        .lines()
-        .position(|l| {
-            l.find(&needle)
-                .is_some_and(|i| l[i + needle.len()..].trim_start().starts_with(':'))
-        })
-        .and_then(|i| u32::try_from(i + 1).ok())
-        .unwrap_or(1)
+/// Posição (byte) logo após `"chave"` seguida de `:` na linha, se houver.
+fn key_end(line: &str, needle: &str) -> Option<usize> {
+    let mut from = 0;
+    while let Some(i) = line[from..].find(needle) {
+        let end = from + i + needle.len();
+        if line[end..].trim_start().starts_with(':') {
+            return Some(end);
+        }
+        from = end;
+    }
+    None
+}
+
+/// Linha da chave `name` DENTRO do bloco da seção (`"dependencies": { ... }`).
+/// Cai para a primeira ocorrência no arquivo e, por fim, para a linha 1.
+fn line_of_key(content: &str, section: &str, name: &str) -> u32 {
+    let lines: Vec<&str> = content.lines().collect();
+    let sec_needle = format!("\"{section}\"");
+    let key_needle = format!("\"{name}\"");
+    let to_line = |i: usize| u32::try_from(i + 1).unwrap_or(u32::MAX);
+    for (i, l) in lines.iter().enumerate() {
+        let Some(sec_end) = key_end(l, &sec_needle) else {
+            continue;
+        };
+        let mut depth: i64 = 0;
+        let mut opened = false;
+        for (j, l2) in lines.iter().enumerate().skip(i) {
+            let seg = if j == i { &l2[sec_end..] } else { l2 };
+            if key_end(seg, &key_needle).is_some() && (opened || seg.contains('{')) {
+                return to_line(j);
+            }
+            for c in seg.chars() {
+                match c {
+                    '{' => {
+                        depth += 1;
+                        opened = true;
+                    }
+                    '}' => depth -= 1,
+                    _ => {}
+                }
+            }
+            if opened && depth <= 0 {
+                break;
+            }
+        }
+    }
+    lines
+        .iter()
+        .position(|l| key_end(l, &key_needle).is_some())
+        .map_or(1, to_line)
 }
 
 pub fn parse_package_json(file: &str, content: &str) -> Vec<DepRef> {
@@ -109,7 +150,7 @@ pub fn parse_package_json(file: &str, content: &str) -> Vec<DepRef> {
                 ecosystem: Ecosystem::Npm,
                 name: name.clone(),
                 file: file.to_string(),
-                line: line_of_key(content, name),
+                line: line_of_key(content, section, name),
             });
         }
     }
@@ -267,7 +308,7 @@ pub async fn lookup(
         {
             Ok(r) => r,
             Err(e) => {
-                tracing::debug!(%url, error = %e, "falha ao consultar registro");
+                tracing::warn!(%url, error = %e, "falha ao consultar registro; dependência não verificada");
                 return Lookup::Unknown;
             }
         };
@@ -276,6 +317,7 @@ pub async fn lookup(
             return Lookup::NotFound;
         }
         if !status.is_success() {
+            tracing::warn!(%url, %status, "registro respondeu erro; dependência não verificada");
             return Lookup::Unknown;
         }
         let Some(body) = read_capped(resp).await else {
@@ -291,9 +333,13 @@ pub async fn lookup(
         })
     };
     // Timeout total por requisição (inclui leitura do corpo).
-    tokio::time::timeout(REQUEST_TIMEOUT, fut)
-        .await
-        .unwrap_or(Lookup::Unknown)
+    match tokio::time::timeout(REQUEST_TIMEOUT, fut).await {
+        Ok(r) => r,
+        Err(_) => {
+            tracing::warn!(%url, "timeout no registro; dependência não verificada");
+            Lookup::Unknown
+        }
+    }
 }
 
 fn registry_label(eco: Ecosystem) -> &'static str {
@@ -303,16 +349,17 @@ fn registry_label(eco: Ecosystem) -> &'static str {
     }
 }
 
-/// Consulta os registros com concorrência ≤ 8 e devolve os achados.
+/// Consulta os registros com concorrência ≤ 8 e devolve os achados (com o mesmo
+/// teto por arquivo do scanner). Erro/429/timeout do registro: nada é acusado (warn no log).
 pub async fn check_deps(
     client: &reqwest::Client,
     npm_base: &str,
     pypi_base: &str,
     deps: Vec<DepRef>,
     now_unix: i64,
-) -> Vec<RawFinding> {
+) -> Collected {
     let mut unique: Vec<(Ecosystem, String)> = Vec::new();
-    for d in &deps {
+    for d in deps.iter().take(MAX_DEPS) {
         let key = (d.ecosystem, d.name.clone());
         if !unique.contains(&key) {
             unique.push(key);
@@ -327,38 +374,40 @@ pub async fn check_deps(
         .collect()
         .await;
 
-    let mut out = Vec::new();
+    let mut sinks: Vec<FileSink> = Vec::new();
     for d in deps {
-        let reg = registry_label(d.ecosystem);
-        let name = &d.name;
-        let file = &d.file;
-        let line = d.line;
-        match results.get(&(d.ecosystem, d.name.clone())) {
-            Some(Lookup::NotFound) => out.push(RawFinding {
-                rule_id: "deps.not-found",
-                category: Category::Slopsquatting,
-                severity: Severity::High,
-                file: d.file.clone(),
-                line,
-                snippet: crate::text::truncate_chars(name, crate::text::SNIPPET_MAX_CHARS),
-                description: format!("O pacote \"{name}\" não existe no {reg}. Pode ser uma dependência alucinada por IA, que um atacante pode registrar (slopsquatting)."),
-                fix_prompt: format!("Em {file}, linha {line}, a dependência \"{name}\" não existe no {reg}. Verifique qual pacote real faz o que o código precisa, troque pelo nome correto (confirmando no site do registro) ou remova a dependência e o código que a usa. Não registre nem instale nomes que não existem."),
-            }),
+        let registry = registry_label(d.ecosystem);
+        let (rule, age_days) = match results.get(&(d.ecosystem, d.name.clone())) {
+            Some(Lookup::NotFound) => (rules::DEPS_NOT_FOUND, 0),
             Some(Lookup::Exists(Some(created))) if now_unix - created < TOO_NEW_SECS => {
-                let days = ((now_unix - created).max(0)) / 86_400;
-                out.push(RawFinding {
-                    rule_id: "deps.too-new",
-                    category: Category::Slopsquatting,
-                    severity: Severity::Medium,
-                    file: d.file.clone(),
-                    line,
-                    snippet: crate::text::truncate_chars(name, crate::text::SNIPPET_MAX_CHARS),
-                    description: format!("O pacote \"{name}\" foi criado no {reg} há {days} dia(s). Pacotes muito novos com nomes plausíveis são um vetor típico de slopsquatting."),
-                    fix_prompt: format!("Em {file}, linha {line}, a dependência \"{name}\" foi publicada no {reg} há menos de 30 dias. Confirme que é o pacote oficial (autor, repositório, downloads); se houver dúvida, troque por uma alternativa estabelecida ou fixe uma versão auditada."),
-                });
+                (rules::DEPS_TOO_NEW, (now_unix - created).max(0) / 86_400)
             }
-            _ => {}
-        }
+            _ => continue,
+        };
+        let idx = match sinks.iter().position(|s| s.file() == d.file) {
+            Some(i) => i,
+            None => {
+                sinks.push(FileSink::new(&d.file));
+                sinks.len() - 1
+            }
+        };
+        let name = d.name;
+        let snippet_src = name.clone();
+        sinks[idx].hit_dep(
+            rule,
+            d.line,
+            || redact::snippet(&snippet_src),
+            Some(DepInfo {
+                name,
+                registry,
+                age_days,
+            }),
+        );
+    }
+    let mut out = Collected::default();
+    for s in sinks {
+        let (retained, overflow) = s.finish();
+        out.add(retained, &overflow);
     }
     out
 }
@@ -411,6 +460,14 @@ mod tests {
             registry_url(Ecosystem::PyPi, "django", "http://npm", "http://pypi"),
             "http://pypi/pypi/django/json"
         );
+    }
+
+    #[test]
+    fn linha_vem_do_bloco_da_secao() {
+        let content = "{\n  \"scripts\": {\n    \"lint\": \"x\",\n    \"react\": \"y\"\n  },\n  \"peerDependencies\": { \"vue\": \"3\" },\n  \"dependencies\": {\n    \"react\": \"18\"\n  }\n}\n";
+        let deps = parse_package_json("package.json", content);
+        let got: Vec<(&str, u32)> = deps.iter().map(|d| (d.name.as_str(), d.line)).collect();
+        assert_eq!(got, vec![("vue", 6), ("react", 8)]);
     }
 
     #[test]

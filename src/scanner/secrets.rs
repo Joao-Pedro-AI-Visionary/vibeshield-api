@@ -5,12 +5,14 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
-use super::{Category, RawFinding, Severity};
+use super::{FileSink, RawFinding, rules};
+use crate::redact;
 use crate::text::{mask_secret, shannon_entropy};
 
 static KNOWN_PREFIX_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(concat!(
-        r"-----BEGIN (?:(?:RSA|EC|OPENSSH|DSA) )?PRIVATE KEY-----",
+        r"-----BEGIN (?:(?:RSA|EC|DSA|OPENSSH|ENCRYPTED) )?PRIVATE KEY-----",
+        r"|-{5}BEGIN PGP PRIVATE KEY BLOCK-{5}",
         r"|\bAKIA[0-9A-Z]{16}\b",
         r"|\bgithub_pat_[A-Za-z0-9_]{22,255}",
         r"|\bgh[pos]_[A-Za-z0-9]{36,255}\b",
@@ -24,11 +26,16 @@ static KNOWN_PREFIX_RE: LazyLock<Regex> = LazyLock::new(|| {
     .expect("regex estática válida")
 });
 
-static PEM_BEGIN_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"-----BEGIN [A-Z0-9 ]+-----").expect("regex estática válida"));
+/// BEGIN de PEM sozinho na linha (só assim abre bloco).
+static PEM_BEGIN_LINE_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^\s*-----BEGIN [A-Z ]+-----\s*$").expect("regex estática válida")
+});
 
 static PEM_END_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"-----END [A-Z0-9 ]+-----").expect("regex estática válida"));
+    LazyLock::new(|| Regex::new(r"-----END [A-Z ]+-----").expect("regex estática válida"));
+
+/// Linhas após o BEGIN em que `secret.high-entropy` fica suspenso.
+const PEM_MAX_LINES: usize = 100;
 
 static TOKEN_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"[A-Za-z0-9+/=_\-]{20,}").expect("regex estática válida"));
@@ -68,14 +75,6 @@ fn skip_entropy_for_file(file: &str) -> bool {
         || name.ends_with(".svg")
 }
 
-/// Substitui segredos de prefixo conhecido na linha pela versão mascarada.
-/// Usado por outras regras antes de expor uma linha como snippet.
-pub fn redact_line(line: &str) -> String {
-    KNOWN_PREFIX_RE
-        .replace_all(line, |c: &regex::Captures<'_>| mask_secret(&c[0]))
-        .into_owned()
-}
-
 fn overlaps(r: &Range<usize>, others: &[Range<usize>]) -> bool {
     others.iter().any(|o| r.start < o.end && o.start < r.end)
 }
@@ -95,75 +94,91 @@ fn looks_ignorable(token: &str) -> bool {
     UUID_RE.is_match(token)
 }
 
-pub fn scan(file: &str, content: &str) -> Vec<RawFinding> {
-    let check_entropy = !skip_entropy_for_file(file);
+/// Faixas (bytes) de segredos de prefixo conhecido na linha.
+pub fn known_prefix_ranges(line: &str) -> Vec<Range<usize>> {
+    KNOWN_PREFIX_RE.find_iter(line).map(|m| m.range()).collect()
+}
+
+/// Faixas (bytes) de tokens que `secret.high-entropy` acusaria (fora de `known`).
+pub fn high_entropy_ranges(line: &str, known: &[Range<usize>]) -> Vec<Range<usize>> {
+    if line.to_ascii_lowercase().contains("integrity") {
+        return Vec::new();
+    }
+    // Troca URLs por espaços do mesmo tamanho em bytes: as faixas continuam válidas.
+    let without_urls = URL_RE.replace_all(line, |c: &regex::Captures<'_>| " ".repeat(c[0].len()));
     let mut out = Vec::new();
-    let mut in_pem = false;
-    for (idx, line) in content.lines().enumerate() {
-        let line_no = u32::try_from(idx + 1).unwrap_or(u32::MAX);
-        // Bloco PEM: o corpo base64 nunca gera achado; chave privada gera um só
-        // `secret.known-prefix` na linha do BEGIN; certificado/chave pública, nada.
-        if in_pem {
-            if PEM_END_RE.is_match(line) {
-                in_pem = false;
-            }
+    for m in TOKEN_RE.find_iter(&without_urls) {
+        let token = m.as_str();
+        let len = token.chars().count();
+        if !(20..=200).contains(&len) || overlaps(&m.range(), known) || looks_ignorable(token) {
             continue;
         }
-        let pem_begin = PEM_BEGIN_RE.find(line);
-        if let Some(b) = pem_begin {
-            in_pem = !PEM_END_RE.is_match(&line[b.end()..]);
-        }
-        let mut known: Vec<Range<usize>> = Vec::new();
-        for m in KNOWN_PREFIX_RE.find_iter(line) {
-            known.push(m.range());
-            out.push(RawFinding {
-                rule_id: "secret.known-prefix",
-                category: Category::Secret,
-                severity: Severity::Critical,
-                file: file.to_string(),
-                line: line_no,
-                snippet: mask_secret(m.as_str()),
-                description: "Credencial com formato conhecido (AWS, GitHub, OpenAI, Anthropic, Slack, Google, Stripe ou chave privada) exposta no código.".to_string(),
-                fix_prompt: format!("No arquivo {file}, linha {line_no}, há uma credencial real escrita no código. Remova o valor do código, leia-o de uma variável de ambiente (com um .env fora do git e um .env.example sem valores), e me lembre de revogar e gerar uma nova credencial no provedor, pois ela já vazou no histórico do git."),
-            });
-        }
-        if pem_begin.is_some() || !check_entropy || line.to_ascii_lowercase().contains("integrity")
-        {
-            continue;
-        }
-        let without_urls =
-            URL_RE.replace_all(line, |c: &regex::Captures<'_>| " ".repeat(c[0].len()));
-        for m in TOKEN_RE.find_iter(&without_urls) {
-            let token = m.as_str();
-            let len = token.chars().count();
-            if !(20..=200).contains(&len) || overlaps(&m.range(), &known) || looks_ignorable(token)
-            {
-                continue;
-            }
-            let entropy = shannon_entropy(token);
-            let prefix = &without_urls[..m.start()];
-            let assigned = ASSIGN_CTX_RE.is_match(prefix);
-            if !((assigned && entropy >= 4.5) || entropy >= 5.0) {
-                continue;
-            }
-            out.push(RawFinding {
-                rule_id: "secret.high-entropy",
-                category: Category::Secret,
-                severity: Severity::High,
-                file: file.to_string(),
-                line: line_no,
-                snippet: mask_secret(token),
-                description: "Valor de alta entropia com cara de segredo (token, senha ou chave) escrito diretamente no código.".to_string(),
-                fix_prompt: format!("No arquivo {file}, linha {line_no}, parece haver um segredo (token, senha ou chave) escrito direto no código. Se for um segredo, mova-o para uma variável de ambiente, adicione o nome ao .env.example sem o valor e garanta que o .env está no .gitignore; se não for segredo, explique o que é esse valor."),
-            });
+        let entropy = shannon_entropy(token);
+        let assigned = ASSIGN_CTX_RE.is_match(&without_urls[..m.start()]);
+        if (assigned && entropy >= 4.5) || entropy >= 5.0 {
+            out.push(m.range());
         }
     }
     out
 }
 
+/// Todas as faixas a mascarar numa linha (usado pela redação única de snippet).
+pub fn secret_ranges(line: &str) -> Vec<Range<usize>> {
+    let mut all = known_prefix_ranges(line);
+    let he = high_entropy_ranges(line, &all);
+    all.extend(he);
+    all.sort_by_key(|r| r.start);
+    all
+}
+
+pub fn scan_into(content: &str, sink: &mut FileSink) {
+    let check_entropy = !skip_entropy_for_file(sink.file());
+    // Linhas restantes do bloco PEM aberto (0 = fora de bloco).
+    let mut pem_left = 0usize;
+    for (idx, line) in content.lines().enumerate() {
+        let line_no = u32::try_from(idx + 1).unwrap_or(u32::MAX);
+        let in_pem = pem_left > 0;
+        if in_pem {
+            pem_left -= 1;
+            if PEM_END_RE.is_match(line) {
+                pem_left = 0;
+            }
+        }
+        // `secret.known-prefix` vale sempre, inclusive dentro do bloco.
+        let known = known_prefix_ranges(line);
+        for r in &known {
+            let value = &line[r.clone()];
+            sink.hit(rules::SECRET_KNOWN_PREFIX, line_no, || {
+                redact::snippet(&mask_secret(value))
+            });
+        }
+        let opens_pem = !in_pem && PEM_BEGIN_LINE_RE.is_match(line);
+        if opens_pem {
+            pem_left = PEM_MAX_LINES;
+        }
+        if in_pem || opens_pem || !check_entropy {
+            continue;
+        }
+        for r in high_entropy_ranges(line, &known) {
+            let value = &line[r];
+            sink.hit(rules::SECRET_HIGH_ENTROPY, line_no, || {
+                redact::snippet(&mask_secret(value))
+            });
+        }
+    }
+}
+
+/// Conveniência para testes.
+pub fn scan(file: &str, content: &str) -> Vec<RawFinding> {
+    let mut sink = FileSink::new(file);
+    scan_into(content, &mut sink);
+    sink.finish().0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::scanner::Severity;
 
     fn rules(f: &[RawFinding]) -> Vec<&str> {
         f.iter().map(|x| x.rule_id).collect()
@@ -240,7 +255,7 @@ mod tests {
 
     #[test]
     fn redact_line_mascara() {
-        let r = redact_line("eval(\"AKIAIOSFODNN7EXAMPLE\")");
+        let r = crate::redact::snippet("eval(\"AKIAIOSFODNN7EXAMPLE\")");
         assert_eq!(r, "eval(\"AKIA…MPLE\")");
     }
 
@@ -291,5 +306,48 @@ mod tests {
         let f = scan("a.ts", &content);
         assert_eq!(rules(&f), vec!["secret.high-entropy"]);
         assert_eq!(f[0].line, 6);
+    }
+
+    #[test]
+    fn pem_novos_tipos_privados() {
+        for kind in [
+            "ENCRYPTED PRIVATE KEY",
+            "DSA PRIVATE KEY",
+            "PGP PRIVATE KEY BLOCK",
+        ] {
+            let f = scan("k.asc", &pem(kind));
+            assert_eq!(rules(&f), vec!["secret.known-prefix"], "{kind}: {f:?}");
+            assert_eq!(f[0].line, 1);
+        }
+    }
+
+    #[test]
+    fn pem_known_prefix_vale_dentro_do_bloco() {
+        let content =
+            "-----BEGIN CERTIFICATE-----\nAKIAIOSFODNN7EXAMPLE\n-----END CERTIFICATE-----\n";
+        let f = scan("a.pem", content);
+        assert_eq!(rules(&f), vec!["secret.known-prefix"]);
+        assert_eq!(f[0].line, 2);
+    }
+
+    #[test]
+    fn pem_bloco_expira_em_100_linhas() {
+        let mut content = String::from("-----BEGIN CERTIFICATE-----\n");
+        for _ in 0..150 {
+            content.push_str(B64_LINE);
+            content.push('\n');
+        }
+        let f = scan("a.pem", &content);
+        // BEGIN na linha 1; linhas 2..=101 suspensas; 102..=151 voltam a ser varridas.
+        assert_eq!(f.len(), 50, "{}", f.len());
+        assert_eq!(f[0].line, 102);
+    }
+
+    #[test]
+    fn pem_begin_que_nao_esta_sozinho_na_linha_nao_abre_bloco() {
+        let content = format!("x = \"-----BEGIN CERTIFICATE-----\"\n{B64_LINE}\n");
+        let f = scan("a.js", &content);
+        assert_eq!(rules(&f), vec!["secret.high-entropy"]);
+        assert_eq!(f[0].line, 2);
     }
 }

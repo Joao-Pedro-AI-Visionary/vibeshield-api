@@ -105,7 +105,9 @@ async fn npm_e_pypi_contra_registro_falso() {
     let base_npm = npm.uri();
     let base_pypi = pypi.uri();
     let client = reqwest::Client::new();
-    let mut findings = check_deps(&client, &base_npm, &base_pypi, deps, now).await;
+    let mut findings = check_deps(&client, &base_npm, &base_pypi, deps, now)
+        .await
+        .retained;
     findings.sort_by(|a, b| a.line.cmp(&b.line).then(a.file.cmp(&b.file)));
 
     let got: Vec<(&str, &str, Severity, u32)> = findings
@@ -126,7 +128,11 @@ async fn npm_e_pypi_contra_registro_falso() {
             .iter()
             .all(|f| f.category == Category::Slopsquatting)
     );
-    assert!(findings[1].description.contains("pacote-alucinado"));
+    assert!(
+        vibeshield_api::report::describe(&findings[1])
+            .0
+            .contains("\"pacote-alucinado\"")
+    );
 
     // Nenhuma requisição para o pacote `file:`.
     let reqs = npm.received_requests().await.unwrap_or_default();
@@ -160,7 +166,8 @@ async fn erro_ou_timeout_do_registro_nao_gera_achado() {
         collect_deps(&manifests),
         now(),
     )
-    .await;
+    .await
+    .retained;
     assert!(f.is_empty(), "{f:?}");
     assert!(
         started.elapsed() < std::time::Duration::from_secs(7),

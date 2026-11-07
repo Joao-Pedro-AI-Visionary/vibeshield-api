@@ -4,8 +4,8 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
-use super::{Category, RawFinding, Severity, secrets};
-use crate::text::{SNIPPET_MAX_CHARS, truncate_chars};
+use super::{FileSink, RawFinding, rules};
+use crate::redact;
 
 static CORS_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(concat!(
@@ -88,59 +88,33 @@ fn extension(file: &str) -> String {
     }
 }
 
-fn snippet(line: &str) -> String {
-    truncate_chars(secrets::redact_line(line).trim(), SNIPPET_MAX_CHARS)
-}
-
-pub fn scan(file: &str, content: &str) -> Vec<RawFinding> {
-    let ext = extension(file);
+pub fn scan_into(content: &str, sink: &mut FileSink) {
+    let ext = extension(sink.file());
     if DOC_EXT.contains(&ext.as_str()) {
-        return Vec::new();
+        return;
     }
     let is_js = JS_EXT.contains(&ext.as_str());
     let is_py = ext == "py";
-    let mut out = Vec::new();
     for (idx, line) in content.lines().enumerate() {
         let line_no = u32::try_from(idx + 1).unwrap_or(u32::MAX);
         if CORS_RE.is_match(line) {
-            out.push(RawFinding {
-                rule_id: "code.cors-wildcard",
-                category: Category::InsecureCode,
-                severity: Severity::Medium,
-                file: file.to_string(),
-                line: line_no,
-                snippet: snippet(line),
-                description: "CORS liberado para qualquer origem (*): qualquer site pode chamar esta API pelo navegador do usuário.".to_string(),
-                fix_prompt: format!("No arquivo {file}, linha {line_no}, o CORS aceita qualquer origem (*). Troque por uma lista explícita de origens permitidas lida de variável de ambiente (ex.: FRONTEND_URL), e não combine curinga com credenciais/cookies."),
-            });
+            sink.hit(rules::CODE_CORS, line_no, || redact::snippet(line));
         }
         let eval_hit = (is_js && JS_EVAL_RE.is_match(line)) || (is_py && PY_EVAL_RE.is_match(line));
         if eval_hit {
-            out.push(RawFinding {
-                rule_id: "code.eval",
-                category: Category::InsecureCode,
-                severity: Severity::Medium,
-                file: file.to_string(),
-                line: line_no,
-                snippet: snippet(line),
-                description: "Execução dinâmica de código (eval/exec/new Function): se a entrada vier do usuário, vira execução remota de código.".to_string(),
-                fix_prompt: format!("No arquivo {file}, linha {line_no}, há execução dinâmica de código (eval, exec ou new Function). Substitua por uma alternativa segura (JSON.parse/json.loads, um mapa de funções permitidas ou um parser dedicado) e garanta que nenhuma entrada do usuário seja executada como código."),
-            });
+            sink.hit(rules::CODE_EVAL, line_no, || redact::snippet(line));
         }
         if HTML_RE.is_match(line) || inner_html_dynamic(line) {
-            out.push(RawFinding {
-                rule_id: "code.dangerous-html",
-                category: Category::InsecureCode,
-                severity: Severity::Low,
-                file: file.to_string(),
-                line: line_no,
-                snippet: snippet(line),
-                description: "HTML inserido sem escape (dangerouslySetInnerHTML, v-html ou innerHTML): risco de XSS se o conteúdo não for confiável.".to_string(),
-                fix_prompt: format!("No arquivo {file}, linha {line_no}, HTML é inserido sem escape. Renderize como texto quando possível; se precisar de HTML, sanitize com uma biblioteca como DOMPurify antes de inserir, e nunca use conteúdo vindo do usuário sem sanitização."),
-            });
+            sink.hit(rules::CODE_HTML, line_no, || redact::snippet(line));
         }
     }
-    out
+}
+
+/// Conveniência para testes.
+pub fn scan(file: &str, content: &str) -> Vec<RawFinding> {
+    let mut sink = FileSink::new(file);
+    scan_into(content, &mut sink);
+    sink.finish().0
 }
 
 #[cfg(test)]
