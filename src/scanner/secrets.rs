@@ -24,6 +24,12 @@ static KNOWN_PREFIX_RE: LazyLock<Regex> = LazyLock::new(|| {
     .expect("regex estática válida")
 });
 
+static PEM_BEGIN_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"-----BEGIN [A-Z0-9 ]+-----").expect("regex estática válida"));
+
+static PEM_END_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"-----END [A-Z0-9 ]+-----").expect("regex estática válida"));
+
 static TOKEN_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"[A-Za-z0-9+/=_\-]{20,}").expect("regex estática válida"));
 
@@ -92,8 +98,21 @@ fn looks_ignorable(token: &str) -> bool {
 pub fn scan(file: &str, content: &str) -> Vec<RawFinding> {
     let check_entropy = !skip_entropy_for_file(file);
     let mut out = Vec::new();
+    let mut in_pem = false;
     for (idx, line) in content.lines().enumerate() {
         let line_no = u32::try_from(idx + 1).unwrap_or(u32::MAX);
+        // Bloco PEM: o corpo base64 nunca gera achado; chave privada gera um só
+        // `secret.known-prefix` na linha do BEGIN; certificado/chave pública, nada.
+        if in_pem {
+            if PEM_END_RE.is_match(line) {
+                in_pem = false;
+            }
+            continue;
+        }
+        let pem_begin = PEM_BEGIN_RE.find(line);
+        if let Some(b) = pem_begin {
+            in_pem = !PEM_END_RE.is_match(&line[b.end()..]);
+        }
         let mut known: Vec<Range<usize>> = Vec::new();
         for m in KNOWN_PREFIX_RE.find_iter(line) {
             known.push(m.range());
@@ -108,7 +127,8 @@ pub fn scan(file: &str, content: &str) -> Vec<RawFinding> {
                 fix_prompt: format!("No arquivo {file}, linha {line_no}, há uma credencial real escrita no código. Remova o valor do código, leia-o de uma variável de ambiente (com um .env fora do git e um .env.example sem valores), e me lembre de revogar e gerar uma nova credencial no provedor, pois ela já vazou no histórico do git."),
             });
         }
-        if !check_entropy || line.to_ascii_lowercase().contains("integrity") {
+        if pem_begin.is_some() || !check_entropy || line.to_ascii_lowercase().contains("integrity")
+        {
             continue;
         }
         let without_urls =
@@ -222,5 +242,54 @@ mod tests {
     fn redact_line_mascara() {
         let r = redact_line("eval(\"AKIAIOSFODNN7EXAMPLE\")");
         assert_eq!(r, "eval(\"AKIA…MPLE\")");
+    }
+
+    /// Linha base64 que, sozinha, dispara alta entropia (36+ chars distintos).
+    const B64_LINE: &str = "Zx8Qp2Lm9Vt4\x52b7Nc1Hd6Kf3Wj5Ys0GaEuTo+/AbCdEfGhIjKlMnOpQrStUvWxYz01";
+
+    fn pem(kind: &str) -> String {
+        format!(
+            "-----BEGIN {kind}-----\n{B64_LINE}\n{B64_LINE}\n{B64_LINE}\n-----END {kind}-----\n"
+        )
+    }
+
+    #[test]
+    fn pem_linha_base64_isolada_dispara_precondicao() {
+        assert_eq!(rules(&scan("a.txt", B64_LINE)), vec!["secret.high-entropy"]);
+    }
+
+    #[test]
+    fn pem_publico_nao_gera_achado() {
+        for kind in ["CERTIFICATE", "PUBLIC KEY", "CERTIFICATE REQUEST"] {
+            let f = scan("certs/cert.pem", &pem(kind));
+            assert!(f.is_empty(), "{kind}: {f:?}");
+        }
+    }
+
+    #[test]
+    fn pem_privado_gera_um_achado_na_linha_do_begin() {
+        for kind in [
+            "PRIVATE KEY",
+            "RSA PRIVATE KEY",
+            "EC PRIVATE KEY",
+            "OPENSSH PRIVATE KEY",
+        ] {
+            let content = format!("const x = 1;\n{}", pem(kind));
+            let f = scan("keys/server.key", &content);
+            assert_eq!(rules(&f), vec!["secret.known-prefix"], "{kind}: {f:?}");
+            assert_eq!(f[0].line, 2);
+        }
+    }
+
+    #[test]
+    fn pem_depois_do_end_volta_a_acusar() {
+        let content = format!(
+            "{}token = \"{}\"\n",
+            pem("CERTIFICATE"),
+            "Zx8Qp2Lm9Vt4\x52b7Nc1Hd6Kf3Wj5Ys0GaEuTo"
+        );
+        let f = scan("a.ts", &content);
+        assert_eq!(rules(&f), vec!["secret.high-entropy"]);
+        assert_eq!(f[0].line, 6);
     }
 }

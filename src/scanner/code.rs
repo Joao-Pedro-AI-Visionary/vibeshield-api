@@ -25,9 +25,57 @@ static PY_EVAL_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?:^|[^\w.])(?:eval|exec)\s*\(").expect("regex estática válida"));
 
 static HTML_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"dangerouslySetInnerHTML|\bv-html\b|\.innerHTML\s*=[^=]|\.innerHTML\s*=$")
-        .expect("regex estática válida")
+    Regex::new(r"dangerouslySetInnerHTML|\bv-html\b").expect("regex estática válida")
 });
+
+static INNER_HTML_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\.innerHTML\s*=").expect("regex estática válida"));
+
+/// Se `s` começa com um literal string completo, devolve o resto após ele.
+/// Template com `${` não conta como literal.
+fn strip_string_literal(s: &str) -> Option<&str> {
+    let mut chars = s.char_indices();
+    let (_, quote) = chars.next()?;
+    if !matches!(quote, '\'' | '"' | '`') {
+        return None;
+    }
+    let mut escaped = false;
+    let mut prev_dollar = false;
+    for (i, c) in chars {
+        if escaped {
+            escaped = false;
+            prev_dollar = false;
+            continue;
+        }
+        match c {
+            '\\' => escaped = true,
+            '{' if quote == '`' && prev_dollar => return None,
+            c if c == quote => return Some(&s[i + c.len_utf8()..]),
+            _ => {}
+        }
+        prev_dollar = c == '$';
+    }
+    None // literal não fechado na linha: não dá para afirmar que é estático
+}
+
+/// `true` se alguma atribuição `.innerHTML =` da linha tem lado direito não literal.
+fn inner_html_dynamic(line: &str) -> bool {
+    for m in INNER_HTML_RE.find_iter(line) {
+        let rest = &line[m.end()..];
+        if rest.starts_with('=') {
+            continue; // comparação `==`/`===`
+        }
+        let rhs = rest.trim_start();
+        let is_literal = strip_string_literal(rhs).is_some_and(|after| {
+            let after = after.trim_start();
+            after.is_empty() || after.starts_with(';') || after.starts_with("//")
+        });
+        if !is_literal {
+            return true;
+        }
+    }
+    false
+}
 
 const JS_EXT: &[&str] = &["js", "ts", "jsx", "tsx", "mjs", "cjs"];
 const DOC_EXT: &[&str] = &["md", "mdx", "markdown", "txt", "rst", "adoc"];
@@ -79,7 +127,7 @@ pub fn scan(file: &str, content: &str) -> Vec<RawFinding> {
                 fix_prompt: format!("No arquivo {file}, linha {line_no}, há execução dinâmica de código (eval, exec ou new Function). Substitua por uma alternativa segura (JSON.parse/json.loads, um mapa de funções permitidas ou um parser dedicado) e garanta que nenhuma entrada do usuário seja executada como código."),
             });
         }
-        if HTML_RE.is_match(line) {
+        if HTML_RE.is_match(line) || inner_html_dynamic(line) {
             out.push(RawFinding {
                 rule_id: "code.dangerous-html",
                 category: Category::InsecureCode,
@@ -160,5 +208,38 @@ mod tests {
     fn snippet_mascara_segredo_na_linha() {
         let f = scan("a.ts", "eval(\"AKIAIOSFODNN7EXAMPLE\")");
         assert_eq!(f[0].snippet, "eval(\"AKIA…MPLE\")");
+    }
+
+    #[test]
+    fn inner_html_com_literal_puro_nao_acusa() {
+        for line in [
+            "el.innerHTML = '';",
+            "el.innerHTML = \"\";",
+            "el.innerHTML = '<span>Searching...</span>';",
+            "el.innerHTML = \"<b>a;b</b>\"; // ok",
+            "el.innerHTML = `<p>estático</p>`;",
+            "el.innerHTML = 'it\\'s';",
+            "el.innerHTML=''",
+        ] {
+            assert!(scan("a.js", line).is_empty(), "{line}");
+        }
+    }
+
+    #[test]
+    fn inner_html_dinamico_continua_acusando() {
+        for line in [
+            "el.innerHTML = x;",
+            "el.innerHTML = '<b>' + name + '</b>';",
+            "el.innerHTML = `<b>${name}</b>`;",
+            "el.innerHTML = html",
+            "a.innerHTML = ''; b.innerHTML = user;",
+            "el.innerHTML =",
+        ] {
+            assert_eq!(
+                rules(&scan("a.js", line)),
+                vec!["code.dangerous-html"],
+                "{line}"
+            );
+        }
     }
 }

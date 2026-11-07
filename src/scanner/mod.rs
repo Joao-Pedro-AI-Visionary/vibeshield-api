@@ -76,7 +76,55 @@ pub fn scan_text(file: &str, content: &str) -> Vec<RawFinding> {
     let mut out = unicode::scan(file, content);
     out.extend(secrets::scan(file, content));
     out.extend(code::scan(file, content));
+    apply_test_context(&mut out);
     out
+}
+
+const TEST_SEGMENTS: &[&str] = &[
+    "test",
+    "tests",
+    "__tests__",
+    "spec",
+    "specs",
+    "fixtures",
+    "__fixtures__",
+    "examples",
+    "example",
+    "e2e",
+];
+
+pub const TEST_SUFFIX: &str = " (em arquivo de teste/exemplo)";
+
+/// Caminho de teste/exemplo: diretório com nome da lista ou arquivo `*.test.*`/`*.spec.*`.
+pub fn is_test_path(file: &str) -> bool {
+    let mut segments: Vec<&str> = file.split('/').collect();
+    let name = segments.pop().unwrap_or("");
+    if segments.iter().any(|s| TEST_SEGMENTS.contains(s)) {
+        return true;
+    }
+    // `a.test.ts`: o marcador precisa ter algo antes e uma extensão depois.
+    let parts: Vec<&str> = name.split('.').collect();
+    parts.len() >= 3
+        && !parts[0].is_empty()
+        && parts[1..parts.len() - 1]
+            .iter()
+            .any(|p| *p == "test" || *p == "spec")
+}
+
+/// Rebaixa um nível a severidade de achados em arquivos de teste/exemplo
+/// (exceto `unicode.*`, que é ataque em qualquer lugar).
+pub fn apply_test_context(findings: &mut [RawFinding]) {
+    for f in findings.iter_mut() {
+        if f.rule_id.starts_with("unicode.") || !is_test_path(&f.file) {
+            continue;
+        }
+        f.severity = match f.severity {
+            Severity::Critical => Severity::High,
+            Severity::High => Severity::Medium,
+            Severity::Medium | Severity::Low => Severity::Low,
+        };
+        f.description.push_str(TEST_SUFFIX);
+    }
 }
 
 /// Caminho relativo com `/`, sem expor o diretório temporário.
@@ -211,5 +259,63 @@ mod tests {
         assert_eq!(out.files_scanned, 3, ".gitignore, src/app.ts, package.json");
         assert_eq!(out.manifests.len(), 1);
         assert_eq!(out.manifests[0].file, "package.json");
+    }
+
+    const SUFIXO: &str = " (em arquivo de teste/exemplo)";
+
+    #[test]
+    fn caminho_de_teste_detectado() {
+        for p in [
+            "test/a.js",
+            "tests/unit/a.js",
+            "src/__tests__/a.js",
+            "spec/a.rb",
+            "specs/a.rb",
+            "fixtures/a.json",
+            "x/__fixtures__/a.json",
+            "examples/a.py",
+            "example/a.py",
+            "e2e/login.ts",
+            "src/a.test.ts",
+            "src/a.spec.js",
+        ] {
+            assert!(is_test_path(p), "{p}");
+        }
+        for p in [
+            "src/app.ts",
+            "testing/a.js",
+            "src/latest.ts",
+            "contest/a.js",
+            "src/test.ts",
+        ] {
+            assert!(!is_test_path(p), "{p}");
+        }
+    }
+
+    #[test]
+    fn rebaixa_severidade_em_teste_exceto_unicode() {
+        let content = "const k = \"AKIAIOSFODNN7EXAMPLE\";\nconst r = eval(x);\nel.innerHTML = y;\nconst a\u{200B}b = 1;\n";
+        let f = scan_text("tests/unit/app.test.ts", content);
+        let got: Vec<(&str, Severity)> = f.iter().map(|x| (x.rule_id, x.severity)).collect();
+        assert_eq!(
+            got,
+            vec![
+                ("unicode.zero-width", Severity::High),
+                ("secret.known-prefix", Severity::High),
+                ("code.eval", Severity::Low),
+                ("code.dangerous-html", Severity::Low),
+            ]
+        );
+        for x in &f {
+            if x.rule_id.starts_with("unicode.") {
+                assert!(!x.description.ends_with(SUFIXO));
+            } else {
+                assert!(x.description.ends_with(SUFIXO), "{}", x.description);
+            }
+        }
+        // Fora de teste, nada muda.
+        let f = scan_text("src/app.ts", content);
+        assert!(f.iter().all(|x| !x.description.ends_with(SUFIXO)));
+        assert!(f.iter().any(|x| x.severity == Severity::Critical));
     }
 }

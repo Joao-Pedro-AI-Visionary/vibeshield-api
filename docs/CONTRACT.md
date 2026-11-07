@@ -68,6 +68,8 @@ Regras de campos:
 | 400 | INVALID_REPO_URL | URL fora do padrão |
 | 400 | INVALID_BODY | JSON malformado / campo ausente / tipo errado |
 | 404 | REPO_NOT_FOUND | repo inexistente ou privado |
+| 404 | NOT_FOUND | rota inexistente |
+| 405 | METHOD_NOT_ALLOWED | rota existe, método HTTP não suportado |
 | 413 | REPO_TOO_LARGE | download passou de MAX_DOWNLOAD_BYTES |
 | 429 | RATE_LIMITED | limite por IP estourado |
 | 502 | UPSTREAM_ERROR | GitHub indisponível / resposta inesperada |

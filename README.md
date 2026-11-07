@@ -45,7 +45,8 @@ cargo test          # não acessa a internet: codeload e registros são servidor
 | GET | `/docs` | Swagger UI |
 | POST | `/api/v1/scans` | `{"repo_url": "...", "check_dependencies": true}` → relatório |
 
-Erros sempre no formato `{"error":{"code":"...","message":"..."}}` (códigos no contrato).
+Erros sempre no formato `{"error":{"code":"...","message":"..."}}` (códigos no contrato),
+inclusive rota inexistente (404 `NOT_FOUND`) e método errado (405 `METHOD_NOT_ALLOWED`).
 
 ## Regras de detecção
 
@@ -61,6 +62,16 @@ Erros sempre no formato `{"error":{"code":"...","message":"..."}}` (códigos no 
 | `code.dangerous-html` | INSECURE_CODE | LOW |
 | `deps.not-found` | SLOPSQUATTING | HIGH (pacote inexistente no npm/PyPI) |
 | `deps.too-new` | SLOPSQUATTING | MEDIUM (pacote criado há < 30 dias) |
+
+Ajustes contra falso positivo:
+
+- Corpo de bloco PEM (`-----BEGIN …-----` até `-----END …-----`) nunca gera alta entropia;
+  `CERTIFICATE`, `PUBLIC KEY` e `CERTIFICATE REQUEST` não geram achado; chave privada gera um único
+  `secret.known-prefix` na linha do BEGIN.
+- Arquivos de teste/exemplo (segmento `test`, `tests`, `__tests__`, `spec`, `specs`, `fixtures`,
+  `__fixtures__`, `examples`, `example`, `e2e`, ou nome `*.test.*`/`*.spec.*`) têm a severidade
+  rebaixada um nível e a descrição ganha " (em arquivo de teste/exemplo)". `unicode.*` não rebaixa.
+- `.innerHTML = …` com literal string puro (sem `+`, `${` ou identificador) não acusa.
 
 Score = `max(0, 100 − Σ pesos)` com CRITICAL 25, HIGH 10, MEDIUM 4, LOW 1. Nota: A ≥ 90, B ≥ 80,
 C ≥ 70, D ≥ 50, F < 50. Score e `summary` contam **todos** os achados; a lista `findings` é
@@ -112,6 +123,5 @@ Valor inválido derruba o boot com mensagem clara (ex.: `PORT=abc`, `FRONTEND_UR
 
 - Rate limit usa o IP do peer TCP. Atrás de proxy/CDN todos os clientes compartilham o IP do proxy;
   usar `X-Forwarded-For` exige confiar no proxy (não habilitado para não permitir spoofing).
-- Rotas inexistentes devolvem o 404/405 padrão do axum (corpo vazio), fora do formato de erro.
 - `deps.too-new` depende da data de criação do registro; packuments gigantes (> 8 MiB) são
   tratados como pacotes existentes e antigos.

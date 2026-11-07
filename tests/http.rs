@@ -389,3 +389,62 @@ async fn cors_so_para_frontend_url() {
     let bad = preflight("https://malicioso.com").await.expect("req");
     assert!(bad.headers().get("access-control-allow-origin").is_none());
 }
+
+#[tokio::test]
+async fn dependencia_em_exemplo_e_rebaixada() {
+    let f = fakes().await;
+    let tarball = tar_gz(&[(
+        "examples/demo/package.json",
+        b"{\n  \"dependencies\": {\n    \"pacote-que-nao-existe\": \"1\"\n  }\n}\n",
+    )]);
+    Mock::given(method("GET"))
+        .and(path("/octo/demo/tar.gz/HEAD"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(tarball))
+        .mount(&f.codeload)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/pacote-que-nao-existe"))
+        .respond_with(ResponseTemplate::new(404))
+        .mount(&f.npm)
+        .await;
+    let base = spawn_app(config(&base_overrides(&f))).await;
+    let (status, v) = post_scan(&base, r#"{"repo_url":"https://github.com/octo/demo"}"#).await;
+    assert_eq!(status, 200, "{v}");
+    let x = &v["findings"][0];
+    assert_eq!(x["rule_id"], "deps.not-found");
+    assert_eq!(x["severity"], "MEDIUM");
+    assert!(
+        x["description"]
+            .as_str()
+            .is_some_and(|d| d.ends_with(" (em arquivo de teste/exemplo)")),
+        "{x}"
+    );
+}
+
+#[tokio::test]
+async fn rota_inexistente_404_e_metodo_errado_405() {
+    let f = fakes().await;
+    let base = spawn_app(config(&base_overrides(&f))).await;
+    let resp = reqwest::get(format!("{base}/api/v1/nada"))
+        .await
+        .expect("req");
+    assert_eq!(resp.status().as_u16(), 404);
+    let v: Value = resp.json().await.expect("json");
+    assert_error(&v, "NOT_FOUND");
+
+    let resp = reqwest::get(format!("{base}/api/v1/scans"))
+        .await
+        .expect("req");
+    assert_eq!(resp.status().as_u16(), 405);
+    let v: Value = resp.json().await.expect("json");
+    assert_error(&v, "METHOD_NOT_ALLOWED");
+
+    let resp = reqwest::Client::new()
+        .delete(format!("{base}/api/v1/health"))
+        .send()
+        .await
+        .expect("req");
+    assert_eq!(resp.status().as_u16(), 405);
+    let v: Value = resp.json().await.expect("json");
+    assert_error(&v, "METHOD_NOT_ALLOWED");
+}

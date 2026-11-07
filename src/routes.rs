@@ -171,16 +171,16 @@ async fn run_scan(
                 .duration_since(UNIX_EPOCH)
                 .map(|d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
                 .unwrap_or(0);
-            findings.extend(
-                deps::check_deps(
-                    &state.http,
-                    &cfg.npm_registry_base,
-                    &cfg.pypi_base,
-                    dep_refs,
-                    now,
-                )
-                .await,
-            );
+            let mut dep_findings = deps::check_deps(
+                &state.http,
+                &cfg.npm_registry_base,
+                &cfg.pypi_base,
+                dep_refs,
+                now,
+            )
+            .await;
+            scanner::apply_test_context(&mut dep_findings);
+            findings.extend(dep_findings);
         }
     }
 
@@ -192,6 +192,14 @@ async fn run_scan(
         bytes_downloaded,
         duration_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
     }))
+}
+
+async fn not_found() -> ApiError {
+    ApiError::NotFound
+}
+
+async fn method_not_allowed() -> ApiError {
+    ApiError::MethodNotAllowed
 }
 
 /// Monta o app completo. O rate limit por IP exige servir com
@@ -227,14 +235,13 @@ pub fn build_app(state: AppState) -> Result<Router, String> {
         .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
         .allow_headers([header::CONTENT_TYPE]);
 
-    let scans = Router::new()
-        .route("/api/v1/scans", post(create_scan))
-        .layer(rate_limit);
-
+    // `route_layer` mantém o MethodRouter (para o fallback de 405 valer aqui também).
     let app = Router::new()
         .route("/api/v1/health", get(health))
-        .merge(scans)
+        .route("/api/v1/scans", post(create_scan).route_layer(rate_limit))
         .merge(SwaggerUi::new("/docs").url("/api/v1/openapi.json", ApiDoc::openapi()))
+        .fallback(not_found)
+        .method_not_allowed_fallback(method_not_allowed)
         .layer(DefaultBodyLimit::max(BODY_LIMIT_BYTES))
         .layer(cors)
         .layer(TraceLayer::new_for_http())
