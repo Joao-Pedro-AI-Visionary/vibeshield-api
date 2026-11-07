@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="260" viewBox="0 0 1280 260" role="img" aria-labelledby="t d">
+  <title id="t">Como o VibeShield funciona</title>
+  <desc id="d">Cinco etapas: você cola a URL do repositório, a API baixa o tarball com teto de tamanho, extrai num diretório isolado, varre os arquivos em paralelo e devolve nota, achados e prompts de correção.</desc>
+  <defs>
+    <linearGradient id="line" gradientUnits="userSpaceOnUse" x1="140" y1="0" x2="1140" y2="0">
+      <stop offset="0" stop-color="#be185d"/><stop offset="1" stop-color="#fde047"/>
+    </linearGradient>
+  </defs>
+  <style>
+    .f { font-family: "Inter", "Segoe UI", system-ui, -apple-system, Helvetica, Arial, sans-serif; }
+    .flow { stroke-dasharray: 10 14; animation: flow 1.2s linear infinite; }
+    .node { animation: lit 6s ease-in-out infinite; }
+    .n2 { animation-delay: 1.2s; } .n3 { animation-delay: 2.4s; } .n4 { animation-delay: 3.6s; } .n5 { animation-delay: 4.8s; }
+    .dot { animation: travel 6s linear infinite; }
+    @keyframes flow { to { stroke-dashoffset: -24; } }
+    @keyframes lit { 0%,22%,100% { stroke: #3a3a40; } 6%,16% { stroke: #fde047; } }
+    @keyframes travel { from { transform: translateX(0); } to { transform: translateX(1000px); } }
+    @media (prefers-reduced-motion: reduce) { .flow, .node, .dot { animation: none; } .dot { opacity: 0; } }
+  </style>
+  <rect width="1280" height="260" rx="28" fill="#0a0a0b"/>
+  <path class="flow" d="M140 112H1140" stroke="url(#line)" stroke-width="4" fill="none"/>
+  <circle class="dot" cx="140" cy="112" r="8" fill="#fde047"/>
+  <g class="f" text-anchor="middle">
+    <g transform="translate(140 112)">
+      <circle class="node" r="44" fill="#232326" stroke="#3a3a40" stroke-width="3"/>
+      <text y="12" font-size="34">🔗</text>
+      <text y="82" fill="#f4f4f5" font-size="20" font-weight="700">Cola a URL</text>
+      <text y="108" fill="#a1a1aa" font-size="15">repositório público</text>
+    </g>
+    <g transform="translate(390 112)">
+      <circle class="node n2" r="44" fill="#232326" stroke="#3a3a40" stroke-width="3"/>
+      <text y="12" font-size="34">📦</text>
+      <text y="82" fill="#f4f4f5" font-size="20" font-weight="700">Baixa o tarball</text>
+      <text y="108" fill="#a1a1aa" font-size="15">teto de 50 MiB, sem git</text>
+    </g>
+    <g transform="translate(640 112)">
+      <circle class="node n3" r="44" fill="#232326" stroke="#3a3a40" stroke-width="3"/>
+      <text y="12" font-size="34">🧪</text>
+      <text y="82" fill="#f4f4f5" font-size="20" font-weight="700">Extrai isolado</text>
+      <text y="108" fill="#a1a1aa" font-size="15">sem symlink, sem executar</text>
+    </g>
+    <g transform="translate(890 112)">
+      <circle class="node n4" r="44" fill="#232326" stroke="#3a3a40" stroke-width="3"/>
+      <text y="12" font-size="34">⚡</text>
+      <text y="82" fill="#f4f4f5" font-size="20" font-weight="700">Varre em paralelo</text>
+      <text y="108" fill="#a1a1aa" font-size="15">Rust + rayon, 10 regras</text>
+    </g>
+    <g transform="translate(1140 112)">
+      <circle class="node n5" r="44" fill="#be185d" stroke="#3a3a40" stroke-width="3"/>
+      <text y="12" font-size="34">🛡️</text>
+      <text y="82" fill="#f4f4f5" font-size="20" font-weight="700">Nota + prompts</text>
+      <text y="108" fill="#a1a1aa" font-size="15">A–F e correção pronta</text>
+    </g>
+  </g>
+</svg>

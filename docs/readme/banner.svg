@@ -1,0 +1,96 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="400" viewBox="0 0 1280 400" role="img" aria-labelledby="t d">
+  <title id="t">VibeShield</title>
+  <desc id="d">Scanner de segurança para código gerado por IA: segredos vazados, Unicode oculto, slopsquatting e código inseguro.</desc>
+  <defs>
+    <linearGradient id="hero" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#be185d"/>
+      <stop offset="1" stop-color="#c2410c"/>
+    </linearGradient>
+    <linearGradient id="txt" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#fb7185"/>
+      <stop offset=".55" stop-color="#fb923c"/>
+      <stop offset="1" stop-color="#fde047"/>
+    </linearGradient>
+    <linearGradient id="beam" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#fde047" stop-opacity="0"/>
+      <stop offset=".5" stop-color="#fde047" stop-opacity=".9"/>
+      <stop offset="1" stop-color="#fde047" stop-opacity="0"/>
+    </linearGradient>
+    <radialGradient id="glow" cx=".25" cy=".35" r=".6">
+      <stop offset="0" stop-color="#be185d" stop-opacity=".45"/>
+      <stop offset="1" stop-color="#be185d" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="glow2" cx=".8" cy=".75" r=".5">
+      <stop offset="0" stop-color="#c2410c" stop-opacity=".35"/>
+      <stop offset="1" stop-color="#c2410c" stop-opacity="0"/>
+    </radialGradient>
+    <pattern id="grid" width="32" height="32" patternUnits="userSpaceOnUse">
+      <path d="M32 0H0V32" fill="none" stroke="#ffffff" stroke-opacity=".05"/>
+    </pattern>
+    <clipPath id="card"><rect width="1280" height="400" rx="28"/></clipPath>
+  </defs>
+  <style>
+    .f { font-family: "Inter", "Segoe UI", system-ui, -apple-system, Helvetica, Arial, sans-serif; }
+    .m { font-family: "Cascadia Code", "SFMono-Regular", Consolas, Menlo, monospace; }
+    .pulse { transform-origin: 196px 200px; animation: pulse 3.2s ease-in-out infinite; }
+    .ring { transform-origin: 196px 200px; animation: ring 3.2s ease-out infinite; }
+    .check { stroke-dasharray: 40; stroke-dashoffset: 40; animation: draw 3.2s ease-in-out infinite; }
+    .scan { animation: scan 4.2s linear infinite; }
+    .chip { opacity: 0; animation: chip 8s ease-out infinite; }
+    .c2 { animation-delay: .5s; } .c3 { animation-delay: 1s; } .c4 { animation-delay: 1.5s; }
+    .cursor { animation: blink 1s steps(1) infinite; }
+    @keyframes pulse { 0%,100% { transform: scale(1); } 50% { transform: scale(1.05); } }
+    @keyframes ring { 0% { transform: scale(.9); opacity: .55; } 80%,100% { transform: scale(1.5); opacity: 0; } }
+    @keyframes draw { 0%,15% { stroke-dashoffset: 40; } 45%,100% { stroke-dashoffset: 0; } }
+    @keyframes scan { from { transform: translateY(-20px); } to { transform: translateY(420px); } }
+    @keyframes chip { 0% { opacity: 0; transform: translateY(10px); } 8%,88% { opacity: 1; transform: none; } 100% { opacity: 0; } }
+    @keyframes blink { 50% { opacity: 0; } }
+    @media (prefers-reduced-motion: reduce) {
+      .pulse, .ring, .check, .scan, .chip, .cursor { animation: none; }
+      .check { stroke-dashoffset: 0; } .chip { opacity: 1; } .ring { opacity: 0; }
+    }
+  </style>
+  <g clip-path="url(#card)">
+    <rect width="1280" height="400" fill="#0a0a0b"/>
+    <rect width="1280" height="400" fill="url(#grid)"/>
+    <rect width="1280" height="400" fill="url(#glow)"/>
+    <rect width="1280" height="400" fill="url(#glow2)"/>
+    <rect class="scan" x="0" y="0" width="1280" height="2" fill="url(#beam)"/>
+
+    <!-- escudo -->
+    <circle class="ring" cx="196" cy="200" r="96" fill="none" stroke="#e11d48" stroke-width="3"/>
+    <g class="pulse">
+      <circle cx="196" cy="200" r="96" fill="#e11d48"/>
+      <g transform="translate(196 200) scale(6) translate(-16 -16)">
+        <path d="M16 7l7 3v5.5c0 4.6-3 8.3-7 9.5-4-1.2-7-4.9-7-9.5V10z" fill="none" stroke="#fff" stroke-width="2.2" stroke-linejoin="round"/>
+        <path class="check" d="M12.5 16l2.5 2.5 4.5-5" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+      </g>
+    </g>
+
+    <!-- título -->
+    <text class="f" x="346" y="168" fill="#f4f4f5" font-size="84" font-weight="800" letter-spacing="-3">VibeShield</text>
+    <text class="f" x="350" y="216" fill="#a1a1aa" font-size="27" font-weight="500">Scanner de segurança para <tspan fill="url(#txt)" font-weight="700">código gerado por IA</tspan></text>
+
+    <!-- campo de URL -->
+    <rect x="350" y="246" width="560" height="48" rx="24" fill="#1c1c1f" stroke="#3a3a40"/>
+    <text class="m" x="376" y="277" fill="#f4f4f5" font-size="18">github.com/seu-usuario/seu-repo<tspan class="cursor" fill="#fde047">▍</tspan></text>
+    <rect x="920" y="246" width="150" height="48" rx="24" fill="#fde047"/>
+    <text class="f" x="995" y="277" fill="#111113" font-size="19" font-weight="700" text-anchor="middle">Escanear</text>
+
+    <!-- achados -->
+    <g class="f" font-size="15" font-weight="600">
+      <g class="chip"><rect x="350" y="314" width="176" height="36" rx="18" fill="#232326" stroke="#be123c"/><circle cx="370" cy="332" r="6" fill="#fb7185"/><text x="384" y="338" fill="#f4f4f5">Segredo vazado</text></g>
+      <g class="chip c2"><rect x="536" y="314" width="172" height="36" rx="18" fill="#232326" stroke="#c2410c"/><circle cx="556" cy="332" r="6" fill="#fb923c"/><text x="570" y="338" fill="#f4f4f5">Unicode oculto</text></g>
+      <g class="chip c3"><rect x="718" y="314" width="160" height="36" rx="18" fill="#232326" stroke="#a16207"/><circle cx="738" cy="332" r="6" fill="#fbbf24"/><text x="752" y="338" fill="#f4f4f5">Slopsquatting</text></g>
+      <g class="chip c4"><rect x="888" y="314" width="182" height="36" rx="18" fill="#232326" stroke="#0369a1"/><circle cx="908" cy="332" r="6" fill="#38bdf8"/><text x="922" y="338" fill="#f4f4f5">Código inseguro</text></g>
+    </g>
+
+    <!-- nota -->
+    <g transform="translate(1110 130)">
+      <rect width="140" height="200" rx="24" fill="url(#hero)"/>
+      <text class="f" x="70" y="48" fill="#ffe4ec" font-size="15" font-weight="600" text-anchor="middle">NOTA</text>
+      <text class="f" x="70" y="132" fill="#fff" font-size="60" font-weight="800" letter-spacing="-2" text-anchor="middle">A–F</text>
+      <text class="f" x="70" y="172" fill="#ffe4ec" font-size="15" font-weight="600" text-anchor="middle">score 0–100</text>
+    </g>
+  </g>
+</svg>

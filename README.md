@@ -1,4 +1,52 @@
-# vibeshield-api
+<div align="center">
+
+<img src="docs/readme/banner.svg" alt="VibeShield: scanner de segurança para código gerado por IA" width="100%">
+
+<br>
+
+**A API em Rust por trás do VibeShield: recebe a URL de um repositório público do GitHub e devolve nota, achados e prompts de correção em segundos.**
+
+![Rust 2024](https://img.shields.io/badge/Rust-2024_edition-000000?style=for-the-badge&logo=rust&logoColor=white)
+![axum 0.8](https://img.shields.io/badge/axum-0.8-b7410e?style=for-the-badge)
+![Tokio](https://img.shields.io/badge/Tokio-1.54-4a4a55?style=for-the-badge)
+![rayon](https://img.shields.io/badge/rayon-paralelo-c2410c?style=for-the-badge)
+<br>
+![OpenAPI 3.1](https://img.shields.io/badge/OpenAPI-3.1-6ba539?style=for-the-badge&logo=openapiinitiative&logoColor=white)
+![Swagger UI](https://img.shields.io/badge/Swagger_UI-/docs-85ea2d?style=for-the-badge&logo=swagger&logoColor=black)
+![Docker](https://img.shields.io/badge/Docker-multi--stage-2496ed?style=for-the-badge&logo=docker&logoColor=white)
+![rustls](https://img.shields.io/badge/TLS-rustls-7c3aed?style=for-the-badge)
+![84 testes](https://img.shields.io/badge/testes-84_passando-15803d?style=for-the-badge)
+
+[**▶ Vídeo e painel (vibeshield-web)**](https://github.com/Joao-Pedro-AI-Visionary/vibeshield-web) · [**Como rodar**](#como-rodar) · [**Endpoints**](#endpoints) · [**Regras**](#regras-de-detecção) · [**Segurança**](#decisões-de-segurança)
+
+<br>
+
+<a href="https://github.com/Joao-Pedro-AI-Visionary/vibeshield-web/blob/main/docs/readme/vibeshield-demo.mp4">
+  <img src="docs/readme/video-capa.jpg" alt="Assistir ao vídeo narrado do VibeShield (1 min 30 s)" width="70%">
+</a>
+
+</div>
+
+---
+
+## ✨ Destaques
+
+| | O quê | Detalhe |
+|---|---|---|
+| ⚡ | **Rápido** | Varredura em paralelo com rayon: express (216 arquivos) em ~1,3 s, vuejs/core (701 arquivos) em ~3,8 s. |
+| 🧪 | **Isolado** | Nada de `git` nem shell: só HTTP GET no `codeload`, extração defensiva em diretório temporário, nada é executado. |
+| 🧠 | **Memória com teto** | 1 milhão de ocorrências num arquivo usam ~20 MB de pico; o resumo e o score continuam exatos. |
+| 🔒 | **Saída segura** | Segredos sempre mascarados, Unicode invisível renderizado como `<U+XXXX>`, prompts blindados contra *prompt injection*. |
+| 🛡️ | **Resistente a abuso** | Teto de download, gzip bomb, rate limit por IP, limite de scans simultâneos (503 na hora) e timeout total. |
+| 📜 | **Contrato-primeiro** | OpenAPI 3.1 gerado do próprio código; o mesmo contrato alimenta o front. |
+
+<div align="center">
+<img src="docs/readme/fluxo.svg" alt="Fluxo: cola a URL, a API baixa o tarball com teto de tamanho, extrai num diretório isolado, varre em paralelo e devolve nota e prompts" width="100%">
+</div>
+
+---
+
+## Sobre
 
 Backend do **VibeShield**: um scanner de segurança para código gerado por IA. Recebe a URL de um
 repositório público do GitHub, baixa o tarball do `codeload`, varre os arquivos e devolve um
@@ -146,3 +194,11 @@ Valor inválido derruba o boot com mensagem clara (ex.: `PORT=abc`, `FRONTEND_UR
   `warn` no log). No máximo 300 pacotes consultados por scan e 200 manifestos considerados.
 - `deps.too-new` depende da data de criação do registro; packuments gigantes (> 8 MiB) são
   tratados como pacotes existentes e antigos.
+
+## Créditos
+
+- Narração do vídeo: voz do autor clonada com [OmniVoice](https://github.com/k2-fsa/OmniVoice) (k2-fsa, Apache-2.0).
+
+<div align="center">
+<sub>Se o VibeShield te ajudou, deixe uma ⭐ para mais gente encontrar.</sub>
+</div>
